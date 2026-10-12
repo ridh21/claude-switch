@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# cswitch - keep several Claude Code logins on one machine and launch any of them.
+# Works with the stock bash 3.2 that ships with macOS.
+
+set -euo pipefail
+
+CSWITCH_VERSION="0.1.0"
+CSWITCH_HOME="${CSWITCH_HOME:-$HOME/.claude-profiles}"
+# The stock Claude Code config, used as the built-in "default" profile and as
+# the source of shared settings.
+CSWITCH_BASE="${CSWITCH_BASE:-$HOME/.claude}"
+
+# Things a new profile shares with the default one, so it behaves the same.
+# "projects" holds conversation history and per-project memory.
+SHARED_ITEMS="settings.json CLAUDE.md keybindings.json skills commands agents plugins projects"
+
+die() { printf 'cswitch: %s\n' "$*" >&2; exit 1; }
+info() { printf '%s\n' "$*" >&2; }
+
+usage() {
+  cat <<'EOF'
+cswitch - keep several Claude Code logins and launch any of them
+
+Usage:
+  cswitch add <name> [--isolated]      Create a profile
+  cswitch list                         List profiles and who is logged in
+  cswitch <name> [claude args...]      Launch Claude Code as a profile
+  cswitch run <name> [claude args...]  Same as above
+  cswitch env <name>                   Print the export line for a profile
+  cswitch remove <name> [-y]           Delete a profile
+  cswitch --version | --help
+
+Examples:
+  cswitch add work            # then: cswitch work   (log in once)
+  cswitch work --continue     # carry on the last conversation in this folder
+  cswitch default             # your original ~/.claude login
+
+"default" is your existing Claude Code setup and is never modified.
+Profiles live in ~/.claude-profiles/<name>/ (override with CSWITCH_HOME).
+EOF
+}
+
+valid_name() {
+  case "$1" in
+    ""|.*|-*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+}
+
+is_reserved() {
+  case "$1" in
+    default|add|list|ls|run|env|remove|rm|help|version) return 0 ;;
+  esac
+  return 1
+}
+
+profile_exists() {
+  [ "$1" = "default" ] || { valid_name "$1" && [ -d "$CSWITCH_HOME/$1" ]; }
+}
+
+require_profile() {
+  [ -n "${1:-}" ] || die "missing profile name"
+  profile_exists "$1" || die "no such profile: $1 (see 'cswitch list')"
+}
+
+# Email of the logged-in account, read from the profile's .claude.json.
+profile_email() {
+  local file
+  if [ "$1" = "default" ]; then
+    file="$(dirname "$CSWITCH_BASE")/.claude.json"
+  else
+    file="$CSWITCH_HOME/$1/.claude.json"
+  fi
+  [ -f "$file" ] || return 0
+  sed -n 's/.*"emailAddress"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -n 1
+}
+
+active_profile() {
+  case "${CLAUDE_CONFIG_DIR:-}" in
+    "") printf 'default\n' ;;
+    "$CSWITCH_HOME"/*) printf '%s\n' "${CLAUDE_CONFIG_DIR#"$CSWITCH_HOME"/}" ;;
+  esac
+}
+
+cmd_add() {
+  local name="" isolated=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --isolated) isolated=1; shift ;;
+      -*) die "unknown option: $1" ;;
+      *) [ -z "$name" ] || die "unexpected argument: $1"; name="$1"; shift ;;
+    esac
+  done
+  [ -n "$name" ] || die "usage: cswitch add <name> [--isolated]"
+  valid_name "$name" || die "profile names may only use letters, digits, '.', '_' and '-'"
+  is_reserved "$name" && die "'$name' is a reserved name"
+  local dir="$CSWITCH_HOME/$name"
+  [ ! -e "$dir" ] || die "profile '$name' already exists"
+
+  mkdir -p "$dir"
+  chmod 700 "$CSWITCH_HOME" "$dir"
+
+  if [ "$isolated" -eq 0 ]; then
+    local item
+    for item in $SHARED_ITEMS; do
+      if [ -e "$CSWITCH_BASE/$item" ]; then
+        ln -s "$CSWITCH_BASE/$item" "$dir/$item"
+        info "  shared $item"
+      fi
+    done
+  fi
+
+  info "Created profile '$name'."
+  info "Run 'cswitch $name' and log in once with that account."
+}
+
+cmd_list() {
+  local active="" name email mark dir
+  active="$(active_profile)"
+  print_row() {
+    mark=" "
+    [ "$1" = "$active" ] && mark="*"
+    email="$(profile_email "$1")"
+    printf '%s %-16s %s\n' "$mark" "$1" "${email:-(not logged in)}"
+  }
+  print_row default
+  for dir in "$CSWITCH_HOME"/*/; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    print_row "$name"
+  done
+}
+
+cmd_env() {
+  require_profile "${1:-}"
+  if [ "$1" = "default" ]; then
+    printf 'unset CLAUDE_CONFIG_DIR\n'
+  else
+    printf 'export CLAUDE_CONFIG_DIR=%q\n' "$CSWITCH_HOME/$1"
+  fi
+}
+
+cmd_run() {
+  local name="${1:-}"
+  require_profile "$name"
+  shift
+  [ "${1:-}" = "--" ] && shift
+  command -v claude >/dev/null 2>&1 || die "'claude' is not on your PATH; install Claude Code first"
+  # The default profile must run with the variable unset: pointing it at
+  # ~/.claude explicitly makes Claude Code look for its login somewhere else.
+  if [ "$name" = "default" ]; then
+    unset CLAUDE_CONFIG_DIR
+  else
+    export CLAUDE_CONFIG_DIR="$CSWITCH_HOME/$name"
+  fi
+  exec claude "$@"
+}
+
+cmd_remove() {
+  local name="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -y|--yes) yes=1; shift ;;
+      -*) die "unknown option: $1" ;;
+      *) [ -z "$name" ] || die "unexpected argument: $1"; name="$1"; shift ;;
+    esac
+  done
+  [ "$name" != "default" ] || die "the default profile is your ~/.claude setup and cannot be removed"
+  require_profile "$name"
+  if [ "$yes" -eq 0 ]; then
+    local reply=""
+    printf "Delete profile '%s'? Shared settings and history are kept. [y/N] " "$name" >&2
+    read -r reply || true
+    case "$reply" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
+  fi
+  # Drop the symlinks first so nothing shared can be followed and deleted.
+  find "$CSWITCH_HOME/$name" -maxdepth 1 -type l -exec rm -f {} +
+  rm -rf "${CSWITCH_HOME:?}/$name"
+  info "Removed profile '$name'."
+}
+
+main() {
+  local cmd="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$cmd" in
+    add) cmd_add "$@" ;;
+    list|ls) cmd_list ;;
+    run) cmd_run "$@" ;;
+    env) cmd_env "$@" ;;
+    remove|rm) cmd_remove "$@" ;;
+    -v|--version|version) printf 'cswitch %s\n' "$CSWITCH_VERSION" ;;
+    ""|-h|--help|help) usage ;;
+    *)
+      if profile_exists "$cmd"; then
+        cmd_run "$cmd" "$@"
+      else
+        die "unknown command or profile: $cmd (try 'cswitch --help')"
+      fi
+      ;;
+  esac
+}
+
+main "$@"
