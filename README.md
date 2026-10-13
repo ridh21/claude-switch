@@ -2,7 +2,7 @@
 
 `cswitch` keeps several Claude Code logins on one machine. Each one is a profile that you log in to once, then launch by name.
 
-It is a single bash script with no dependencies. It works with the bash 3.2 that ships with macOS, and on Linux.
+It is a single bash script with no dependencies, including the interactive account menu. It works with the bash 3.2 that ships with macOS, and on Linux.
 
 ## Install
 
@@ -37,6 +37,37 @@ cswitch remove work
 ```
 
 `default` is your existing `~/.claude` setup. `cswitch` never modifies it.
+
+## Pick an account every time
+
+Run `cswitch` with no arguments to choose from a menu:
+
+```
+  Which Claude account?
+
+  ❯ 1  default  me@example.com  last used
+    2  work     me@company.com
+    3  client   not logged in
+
+  ↑/↓ move  ·  enter select  ·  1-9 pick  ·  q cancel
+```
+
+Move with the arrow keys or `j`/`k`, press Enter to launch, or press a number to launch that row directly. The menu starts on the profile you used last, so Enter repeats it. `q`, Esc and Ctrl-C cancel without starting Claude Code.
+
+To get the menu whenever you type `claude`, add this to `~/.zshrc` or `~/.bashrc`:
+
+```bash
+eval "$(cswitch init)"
+```
+
+After that, `claude`, `claude --continue`, `claude mcp list` and so on ask which account to use, then run with your arguments unchanged. The menu is skipped when:
+
+- only the `default` profile exists
+- input or output is not a terminal, such as in a script or a pipe
+- the command does not depend on the account: `--version`, `--help`, `update`, `install`, `doctor`
+- `CSWITCH_PROFILE` is set, as in `CSWITCH_PROFILE=work claude`, which uses that profile directly
+
+`command claude` runs Claude Code without the menu. `cswitch pick [claude args...]` shows the menu without the shell function.
 
 To point another tool or a whole shell at a profile:
 

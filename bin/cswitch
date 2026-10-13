@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-CSWITCH_VERSION="0.1.0"
+CSWITCH_VERSION="0.2.0"
 CSWITCH_HOME="${CSWITCH_HOME:-$HOME/.claude-profiles}"
 # The stock Claude Code config, used as the built-in "default" profile and as
 # the source of shared settings.
@@ -24,9 +24,13 @@ cswitch - keep several Claude Code logins and launch any of them
 Usage:
   cswitch add <name> [--isolated]      Create a profile
   cswitch list                         List profiles and who is logged in
+  cswitch                              Pick a profile from a menu and launch it
+  cswitch pick [claude args...]        Same, passing arguments on to claude
   cswitch <name> [claude args...]      Launch Claude Code as a profile
   cswitch run <name> [claude args...]  Same as above
   cswitch env <name>                   Print the export line for a profile
+  cswitch init                         Print a shell function that makes plain
+                                       'claude' ask which profile to use
   cswitch remove <name> [-y]           Delete a profile
   cswitch --version | --help
 
@@ -34,6 +38,7 @@ Examples:
   cswitch add work            # then: cswitch work   (log in once)
   cswitch work --continue     # carry on the last conversation in this folder
   cswitch default             # your original ~/.claude login
+  eval "$(cswitch init)"      # in ~/.zshrc or ~/.bashrc: 'claude' now asks first
 
 "default" is your existing Claude Code setup and is never modified.
 Profiles live in ~/.claude-profiles/<name>/ (override with CSWITCH_HOME).
@@ -48,7 +53,7 @@ valid_name() {
 
 is_reserved() {
   case "$1" in
-    default|add|list|ls|run|env|remove|rm|help|version) return 0 ;;
+    default|add|list|ls|run|env|remove|rm|pick|init|_claude|help|version) return 0 ;;
   esac
   return 1
 }
@@ -79,6 +84,137 @@ active_profile() {
     "") printf 'default\n' ;;
     "$CSWITCH_HOME"/*) printf '%s\n' "${CLAUDE_CONFIG_DIR#"$CSWITCH_HOME"/}" ;;
   esac
+}
+
+# Filled by load_profiles: "default" first, then every profile directory.
+PROFILE_NAMES=()
+
+load_profiles() {
+  local dir
+  PROFILE_NAMES=(default)
+  for dir in "$CSWITCH_HOME"/*/; do
+    [ -d "$dir" ] || continue
+    PROFILE_NAMES[${#PROFILE_NAMES[@]}]="$(basename "$dir")"
+  done
+}
+
+last_profile() {
+  [ -f "$CSWITCH_HOME/.last" ] || return 0
+  head -n 1 "$CSWITCH_HOME/.last"
+}
+
+# State of the picker. It talks to the terminal on fd 3 so it keeps working
+# when stdout is captured.
+PICKED=""
+PICK_STTY=""
+PICK_HEIGHT=0
+PICK_DRAWN=0
+
+pick_close() {
+  [ "$PICK_DRAWN" -eq 0 ] || printf '\033[%dA\r\033[J' "$PICK_HEIGHT" >&3
+  PICK_DRAWN=0
+  printf '\033[?7h\033[?25h' >&3
+  [ -z "$PICK_STTY" ] || stty "$PICK_STTY" <&3 2>/dev/null || true
+  PICK_STTY=""
+}
+
+# Read one keypress into KEY: up, down, enter, cancel, or the literal character.
+read_key() {
+  local c rest
+  c="$(dd bs=1 count=1 2>/dev/null <&3 || true)"
+  case "$c" in
+    "") KEY=enter ;;
+    $'\033')
+      # An arrow key sends ESC plus two more bytes at once; a lone ESC sends
+      # nothing more, so wait a tenth of a second for the rest.
+      stty min 0 time 1 <&3
+      rest="$(dd bs=1 count=2 2>/dev/null <&3 || true)"
+      stty min 1 time 0 <&3
+      case "$rest" in
+        "[A"|"OA") KEY=up ;;
+        "[B"|"OB") KEY=down ;;
+        "") KEY=cancel ;;
+        *) KEY=other ;;
+      esac
+      ;;
+    *) KEY="$c" ;;
+  esac
+}
+
+# Ask on the terminal which profile to use. Sets PICKED; returns 1 if cancelled.
+pick_profile() {
+  local count=${#PROFILE_NAMES[@]} sel=0 i width=0 last name email tag num
+  local bold="" dim="" accent="" reset="" pointer=">" dot="-" arrows="up/down"
+  local emails=()
+
+  exec 3<>/dev/tty || die "no terminal to ask on; use 'cswitch <name>'"
+
+  if [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    bold=$'\033[1m' dim=$'\033[2m' accent=$'\033[36m' reset=$'\033[0m'
+  fi
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8*|*utf8*|*UTF8*|*utf-8*) pointer="❯" dot="·" arrows="↑/↓" ;;
+  esac
+
+  # Start on the profile this shell already points at, else the last one used.
+  last="$(last_profile)"
+  name="$last"
+  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || name="$(active_profile)"
+  for ((i = 0; i < count; i++)); do
+    emails[$i]="$(profile_email "${PROFILE_NAMES[$i]}")"
+    [ ${#PROFILE_NAMES[$i]} -le "$width" ] || width=${#PROFILE_NAMES[$i]}
+    [ "${PROFILE_NAMES[$i]}" != "$name" ] || sel=$i
+  done
+
+  PICK_HEIGHT=$((count + 5))
+  PICK_STTY="$(stty -g <&3)"
+  trap 'pick_close; exit 130' INT TERM HUP
+  stty -icanon -echo min 1 time 0 <&3
+  # No line wrap while the menu is up, so a narrow window cannot break redraws.
+  printf '\033[?25l\033[?7l' >&3
+
+  while :; do
+    {
+      [ "$PICK_DRAWN" -eq 0 ] || printf '\033[%dA' "$PICK_HEIGHT"
+      printf '\r\033[2K\n\033[2K  %sWhich Claude account?%s\n\033[2K\n' "$bold" "$reset"
+      for ((i = 0; i < count; i++)); do
+        email="${emails[$i]:-not logged in}"
+        tag=""
+        [ "${PROFILE_NAMES[$i]}" != "$last" ] || tag="  last used"
+        num=" "
+        [ "$i" -ge 9 ] || num=$((i + 1))
+        if [ "$i" -eq "$sel" ]; then
+          printf '\033[2K  %s%s %s  %-*s  %s%s%s%s%s\n' "$accent$bold" "$pointer" "$num" \
+            "$width" "${PROFILE_NAMES[$i]}" "$email" "$reset" "$dim" "$tag" "$reset"
+        else
+          printf '\033[2K    %s%s%s  %-*s  %s%s%s%s\n' "$dim" "$num" "$reset" \
+            "$width" "${PROFILE_NAMES[$i]}" "$dim" "$email" "$tag" "$reset"
+        fi
+      done
+      printf '\033[2K\n\033[2K  %s%s move  %s  enter select  %s  1-9 pick  %s  q cancel%s\n' \
+        "$dim" "$arrows" "$dot" "$dot" "$dot" "$reset"
+    } >&3
+    PICK_DRAWN=1
+
+    read_key
+    case "$KEY" in
+      up|k) sel=$(((sel + count - 1) % count)) ;;
+      down|j) sel=$(((sel + 1) % count)) ;;
+      enter|" ") break ;;
+      cancel|q) sel=-1; break ;;
+      [1-9]) if [ "$KEY" -le "$count" ]; then sel=$((KEY - 1)); break; fi ;;
+    esac
+  done
+
+  pick_close
+  trap - INT TERM HUP
+  if [ "$sel" -ge 0 ]; then
+    PICKED="${PROFILE_NAMES[$sel]}"
+    printf '  %s%s%s %s %s%s%s\n' "$accent" "$pointer" "$reset" "$PICKED" \
+      "$dim" "${emails[$sel]:-not logged in}" "$reset" >&3
+  fi
+  exec 3>&-
+  [ "$sel" -ge 0 ]
 }
 
 cmd_add() {
@@ -139,12 +275,15 @@ cmd_env() {
   fi
 }
 
-cmd_run() {
-  local name="${1:-}"
-  require_profile "$name"
-  shift
-  [ "${1:-}" = "--" ] && shift
+require_claude() {
   command -v claude >/dev/null 2>&1 || die "'claude' is not on your PATH; install Claude Code first"
+}
+
+# Replace this process with Claude Code running as a profile.
+launch() {
+  local name="$1"
+  shift
+  require_claude
   # The default profile must run with the variable unset: pointing it at
   # ~/.claude explicitly makes Claude Code look for its login somewhere else.
   if [ "$name" = "default" ]; then
@@ -152,7 +291,55 @@ cmd_run() {
   else
     export CLAUDE_CONFIG_DIR="$CSWITCH_HOME/$name"
   fi
+  [ ! -d "$CSWITCH_HOME" ] || printf '%s\n' "$name" > "$CSWITCH_HOME/.last" 2>/dev/null || true
   exec claude "$@"
+}
+
+cmd_run() {
+  local name="${1:-}"
+  require_profile "$name"
+  shift
+  [ "${1:-}" = "--" ] && shift
+  launch "$name" "$@"
+}
+
+cmd_pick() {
+  load_profiles
+  # With nothing to choose between, leave the environment as it is.
+  if [ ${#PROFILE_NAMES[@]} -eq 1 ]; then
+    require_claude
+    exec claude "$@"
+  fi
+  pick_profile || exit 130
+  launch "$PICKED" "$@"
+}
+
+# What the shell function from 'cswitch init' calls in place of claude.
+cmd_claude() {
+  if [ -n "${CSWITCH_PROFILE:-}" ]; then
+    require_profile "$CSWITCH_PROFILE"
+    launch "$CSWITCH_PROFILE" "$@"
+  fi
+  # Do not ask when nobody is there to answer, or when the account is irrelevant.
+  local ask=1
+  { [ -t 0 ] && [ -t 1 ]; } || ask=0
+  case "${1:-}" in
+    -v|--version|-h|--help|update|install|doctor) ask=0 ;;
+  esac
+  if [ "$ask" -eq 0 ]; then
+    require_claude
+    exec claude "$@"
+  fi
+  cmd_pick "$@"
+}
+
+cmd_init() {
+  local self="cswitch"
+  case "$0" in
+    /*) self="$0" ;;
+    */*) self="$PWD/$0" ;;
+  esac
+  printf 'claude() { %q _claude "$@"; }\n' "$self"
 }
 
 cmd_remove() {
@@ -187,8 +374,19 @@ main() {
     run) cmd_run "$@" ;;
     env) cmd_env "$@" ;;
     remove|rm) cmd_remove "$@" ;;
+    pick) cmd_pick "$@" ;;
+    init) cmd_init ;;
+    _claude) cmd_claude "$@" ;;
     -v|--version|version) printf 'cswitch %s\n' "$CSWITCH_VERSION" ;;
-    ""|-h|--help|help) usage ;;
+    "")
+      load_profiles
+      if [ -t 0 ] && [ -t 1 ] && [ ${#PROFILE_NAMES[@]} -gt 1 ]; then
+        cmd_pick
+      else
+        usage
+      fi
+      ;;
+    -h|--help|help) usage ;;
     *)
       if profile_exists "$cmd"; then
         cmd_run "$cmd" "$@"
