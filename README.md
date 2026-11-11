@@ -2,7 +2,7 @@
 
 `cswitch` keeps several Claude Code logins on one machine. Each one is a profile that you log in to once, then launch by name.
 
-It is a single bash script with no dependencies, including the interactive account menu. It works with the bash 3.2 that ships with macOS, and on Linux.
+It is a single bash script with no dependencies beyond `curl` (used only by `cswitch usage`). It works with the bash 3.2 that ships with macOS, and on Linux.
 
 ## Install
 
@@ -30,6 +30,7 @@ You also need [Claude Code](https://claude.com/claude-code) itself.
 cswitch add work          # create a profile
 cswitch work              # launch Claude Code; log in once with that account
 cswitch list              # show profiles and the account each is logged in as
+cswitch usage             # session and weekly limits for every account
 
 cswitch work --continue   # any claude arguments are passed through
 cswitch default           # your original login
@@ -37,6 +38,27 @@ cswitch remove work
 ```
 
 `default` is your existing `~/.claude` setup. `cswitch` never modifies it.
+
+## See which account has room left
+
+```bash
+cswitch usage
+```
+
+```
+  PROFILE  ACCOUNT                SESSION (5h)    resets    WEEKLY (7d)     resets
+* default  me@example.com           84% ████████░░ 1h 02m     56% ██████░░░░ 2d 15h
+  work     me@company.com           12% █░░░░░░░░░ 3h 40m     20% ██░░░░░░░░ 4d 2h
+  client   not logged in: run cswitch client
+
+  Most room: work (12% session, 20% weekly)  ->  cswitch work
+```
+
+It shows each login's 5-hour session limit and 7-day weekly limit, the same numbers as `/usage` inside Claude Code, and suggests the one with the most room. All profiles are checked at once. `cswitch usage --json` prints the same data for scripts.
+
+To do this, `cswitch` reads each profile's Claude Code login token (from the macOS Keychain, or `.credentials.json` on Linux) and sends it to `api.anthropic.com` only. The token is never printed, stored or put on a command line. It never refreshes or changes a login: if a token has expired, launch that profile once and Claude Code refreshes it.
+
+The usage endpoint is the one Claude Code itself uses and is not a documented public API, so it may change.
 
 ## Pick an account every time
 
