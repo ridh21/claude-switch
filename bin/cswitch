@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-CSWITCH_VERSION="0.2.0"
+CSWITCH_VERSION="0.3.0"
 CSWITCH_HOME="${CSWITCH_HOME:-$HOME/.claude-profiles}"
 # The stock Claude Code config, used as the built-in "default" profile and as
 # the source of shared settings.
@@ -24,6 +24,7 @@ cswitch - keep several Claude Code logins and launch any of them
 Usage:
   cswitch add <name> [--isolated]      Create a profile
   cswitch list                         List profiles and who is logged in
+  cswitch usage [--json]               Show each login's session and weekly limits
   cswitch                              Pick a profile from a menu and launch it
   cswitch pick [claude args...]        Same, passing arguments on to claude
   cswitch <name> [claude args...]      Launch Claude Code as a profile
@@ -38,6 +39,7 @@ Examples:
   cswitch add work            # then: cswitch work   (log in once)
   cswitch work --continue     # carry on the last conversation in this folder
   cswitch default             # your original ~/.claude login
+  cswitch usage               # which login has the most room left
   eval "$(cswitch init)"      # in ~/.zshrc or ~/.bashrc: 'claude' now asks first
 
 "default" is your existing Claude Code setup and is never modified.
@@ -53,7 +55,7 @@ valid_name() {
 
 is_reserved() {
   case "$1" in
-    default|add|list|ls|run|env|remove|rm|pick|init|_claude|help|version) return 0 ;;
+    default|add|list|ls|usage|run|env|remove|rm|pick|init|_claude|help|version) return 0 ;;
   esac
   return 1
 }
@@ -266,6 +268,234 @@ cmd_list() {
   done
 }
 
+# ---- usage limits ---------------------------------------------------------
+# Claude Code keeps each login's OAuth token in the macOS Keychain under
+# "Claude Code-credentials", plus "-<first 8 hex of sha256(CLAUDE_CONFIG_DIR)>"
+# when the variable is set. On Linux it is <config dir>/.credentials.json.
+# The token is only sent to api.anthropic.com and never printed or stored.
+
+USAGE_URL="${CSWITCH_USAGE_URL:-https://api.anthropic.com/api/oauth/usage}"
+
+profile_dir() {
+  if [ "$1" = "default" ]; then printf '%s\n' "$CSWITCH_BASE"; else printf '%s\n' "$CSWITCH_HOME/$1"; fi
+}
+
+sha256_8() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | cut -c1-8
+  else
+    printf '%s' "$1" | sha256sum | cut -c1-8
+  fi
+}
+
+# Print the stored credentials JSON for a profile, or nothing.
+profile_credentials() {
+  local dir svc
+  dir="$(profile_dir "$1")"
+  if [ "$(uname -s)" = "Darwin" ] && command -v security >/dev/null 2>&1; then
+    svc="Claude Code-credentials"
+    [ "$1" = "default" ] || svc="$svc-$(sha256_8 "$dir")"
+    security find-generic-password -s "$svc" -w 2>/dev/null && return 0
+  fi
+  [ ! -f "$dir/.credentials.json" ] || cat "$dir/.credentials.json"
+}
+
+# json_field <key> <json>: value of "key": "string" or "key": number.
+# Good enough for the flat objects used here; the key must appear once.
+json_field() {
+  printf '%s' "$2" | tr -d '\n' |
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\).*/\1/p" | head -n 1
+}
+
+# json_object <key> <json>: the flat {...} body of "key": {...}, or nothing.
+json_object() {
+  printf '%s' "$2" | tr -d '\n' |
+    sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*{\([^}]*\)}.*/\1/p" | head -n 1
+}
+
+iso_to_epoch() {
+  local base="${1%%.*}"
+  base="${base%%+*}"
+  base="${base%Z}"
+  [ -n "$base" ] || return 0
+  date -u -d "$base" +%s 2>/dev/null ||
+    date -j -u -f '%Y-%m-%dT%H:%M:%S' "$base" +%s 2>/dev/null || true
+}
+
+# "1h 05m" style text for the time until an ISO timestamp.
+until_text() {
+  local at now s
+  at="$(iso_to_epoch "$1")"
+  [ -n "$at" ] || return 0
+  now="$(date +%s)"
+  s=$((at - now))
+  if [ "$s" -le 0 ]; then printf 'now'
+  elif [ "$s" -le 3540 ]; then printf '%dm' $(((s + 59) / 60))
+  elif [ "$s" -lt 86400 ]; then printf '%dh %02dm' $(((s + 59) / 3600)) $(((s + 59) % 3600 / 60))
+  else printf '%dd %dh' $((s / 86400)) $((s % 86400 / 3600))
+  fi
+}
+
+# Fetch one profile's limits as one line:
+#   status|session_pct|session_reset|weekly_pct|weekly_reset
+# status is ok, logged-out, expired, rate-limited or error.
+fetch_usage() {
+  local creds token expires now_ms body code obj s_pct s_at w_pct w_at
+  # Only the Claude login itself; the entry also holds MCP server tokens.
+  creds="$(json_object claudeAiOauth "$(profile_credentials "$1" || true)")"
+  creds="{$creds}"
+  token="$(json_field accessToken "$creds")"
+  if [ -z "$token" ]; then
+    # Claude Code clears the access token but keeps the refresh token; the next
+    # launch of that profile gets a new one.
+    if [ -n "$(json_field refreshToken "$creds")" ]; then printf 'expired||||\n'; else printf 'logged-out||||\n'; fi
+    return
+  fi
+  expires="$(json_field expiresAt "$creds")"
+  now_ms="$(date +%s)000"
+  case "$expires" in
+    ''|*[!0-9]*) ;;
+    *) [ "$expires" -gt "$now_ms" ] || { printf 'expired||||\n'; return; } ;;
+  esac
+  # The token goes in on stdin so it never shows up in the process list.
+  body="$(printf 'header = "Authorization: Bearer %s"\n' "$token" |
+    curl -sS -m 15 -K - -w '\n%{http_code}' "$USAGE_URL" \
+      -H "anthropic-beta: oauth-2025-04-20" \
+      -H "Content-Type: application/json" 2>/dev/null || true)"
+  code="${body##*$'\n'}"
+  body="${body%$'\n'*}"
+  case "$code" in
+    200) ;;
+    401|403) printf 'expired||||\n'; return ;;
+    429) printf 'rate-limited||||\n'; return ;;
+    *) printf 'error||||\n'; return ;;
+  esac
+  obj="$(json_object five_hour "$body")"
+  s_pct="$(json_field utilization "{$obj}")"
+  s_at="$(json_field resets_at "{$obj}")"
+  obj="$(json_object seven_day "$body")"
+  w_pct="$(json_field utilization "{$obj}")"
+  w_at="$(json_field resets_at "{$obj}")"
+  case "$s_pct" in ''|null) s_pct="" ;; *) s_pct="$(printf '%.0f' "$s_pct")" ;; esac
+  case "$w_pct" in ''|null) w_pct="" ;; *) w_pct="$(printf '%.0f' "$w_pct")" ;; esac
+  [ "$s_at" != "null" ] || s_at=""
+  [ "$w_at" != "null" ] || w_at=""
+  printf 'ok|%s|%s|%s|%s\n' "$s_pct" "$s_at" "$w_pct" "$w_at"
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+json_str_or_null() {
+  if [ -n "$1" ]; then printf '"%s"' "$(json_escape "$1")"; else printf 'null'; fi
+}
+
+json_bool() {
+  if [ "$1" = "$2" ]; then printf 'true'; else printf 'false'; fi
+}
+
+# meter <percent> <reset iso>: "  82% ████████░░ 1h 05m", colored by level.
+meter() {
+  local p="$1" n color bar="" k
+  if [ -z "$p" ]; then printf '%-24s' "   -"; return; fi
+  n=$(((p + 5) / 10))
+  [ "$n" -le 10 ] || n=10
+  color="$U_GREEN"
+  [ "$p" -lt 50 ] || color="$U_YELLOW"
+  [ "$p" -lt 80 ] || color="$U_RED"
+  for ((k = 0; k < 10; k++)); do
+    if [ "$k" -lt "$n" ]; then bar="$bar$U_FULL"; else bar="$bar$U_EMPTY"; fi
+  done
+  printf '%s%4s%%%s %s%s%s %s%-7s%s' "$U_BOLD" "$p" "$U_RESET" "$color" "$bar" "$U_RESET" \
+    "$U_DIM" "$(until_text "$2")" "$U_RESET"
+}
+
+cmd_usage() {
+  local json=0 tmp i count name status s_pct s_at w_pct w_at email active last mark
+  local best="" best_s=101 best_w=101 width=7
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "usage: cswitch usage [--json]" ;;
+    esac
+  done
+  command -v curl >/dev/null 2>&1 || die "'curl' is needed to check usage"
+  load_profiles
+  count=${#PROFILE_NAMES[@]}
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/cswitch.XXXXXX")"
+  USAGE_TMP="$tmp"
+  trap 'rm -rf "$USAGE_TMP"' EXIT
+
+  # Ask for every profile at once.
+  for ((i = 0; i < count; i++)); do
+    fetch_usage "${PROFILE_NAMES[$i]}" > "$tmp/$i" &
+  done
+  wait
+
+  active="$(active_profile)"
+  last="$(last_profile)"
+
+  if [ "$json" -eq 1 ]; then
+    printf '['
+    for ((i = 0; i < count; i++)); do
+      name="${PROFILE_NAMES[$i]}"
+      IFS='|' read -r status s_pct s_at w_pct w_at < "$tmp/$i" || true
+      [ "$i" -eq 0 ] || printf ','
+      printf '{"name":%s,"email":%s,"status":"%s","active":%s,"last_used":%s,' \
+        "$(json_str_or_null "$name")" "$(json_str_or_null "$(profile_email "$name")")" \
+        "$status" "$(json_bool "$name" "$active")" "$(json_bool "$name" "$last")"
+      printf '"session":{"percent":%s,"resets_at":%s},"weekly":{"percent":%s,"resets_at":%s}}' \
+        "${s_pct:-null}" "$(json_str_or_null "$s_at")" "${w_pct:-null}" "$(json_str_or_null "$w_at")"
+    done
+    printf ']\n'
+    return
+  fi
+
+  U_BOLD="" U_DIM="" U_RESET="" U_RED="" U_YELLOW="" U_GREEN="" U_FULL="#" U_EMPTY="."
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    U_BOLD=$'\033[1m' U_DIM=$'\033[2m' U_RESET=$'\033[0m'
+    U_RED=$'\033[31m' U_YELLOW=$'\033[33m' U_GREEN=$'\033[32m'
+  fi
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8*|*utf8*|*UTF8*|*utf-8*) U_FULL="█" U_EMPTY="░" ;;
+  esac
+  for ((i = 0; i < count; i++)); do
+    [ ${#PROFILE_NAMES[$i]} -le "$width" ] || width=${#PROFILE_NAMES[$i]}
+  done
+
+  printf '  %s%-*s  %-30s  %-24s  %s%s\n' "$U_DIM" "$width" "PROFILE" "ACCOUNT" \
+    "SESSION (5h)    resets" "WEEKLY (7d)     resets" "$U_RESET"
+  for ((i = 0; i < count; i++)); do
+    name="${PROFILE_NAMES[$i]}"
+    IFS='|' read -r status s_pct s_at w_pct w_at < "$tmp/$i" || true
+    email="$(profile_email "$name")"
+    mark=" "
+    [ "$name" != "$active" ] || mark="*"
+    printf '%s %-*s  %-30s  ' "$mark" "$width" "$name" "${email:-(not logged in)}"
+    case "$status" in
+      ok)
+        printf '%s  %s\n' "$(meter "$s_pct" "$s_at")" "$(meter "$w_pct" "$w_at")"
+        # Most room: lowest session use, then lowest weekly, among usable logins.
+        if [ -n "$s_pct" ] && [ "$s_pct" -lt 100 ] && [ "${w_pct:-0}" -lt 100 ]; then
+          if [ "$s_pct" -lt "$best_s" ] ||
+            { [ "$s_pct" -eq "$best_s" ] && [ "${w_pct:-0}" -lt "$best_w" ]; }; then
+            best="$name" best_s="$s_pct" best_w="${w_pct:-0}"
+          fi
+        fi
+        ;;
+      logged-out) printf '%snot logged in: run cswitch %s%s\n' "$U_DIM" "$name" "$U_RESET" ;;
+      expired) printf '%slogin expired: run cswitch %s once to refresh it%s\n' "$U_YELLOW" "$name" "$U_RESET" ;;
+      rate-limited) printf '%sasked too often; try again in a minute%s\n' "$U_YELLOW" "$U_RESET" ;;
+      *) printf '%scould not reach the usage service%s\n' "$U_RED" "$U_RESET" ;;
+    esac
+  done
+  if [ -n "$best" ]; then
+    printf '\n  Most room: %s%s%s (%s%% session, %s%% weekly)  ->  cswitch %s\n' \
+      "$U_BOLD" "$best" "$U_RESET" "$best_s" "$best_w" "$best"
+  fi
+}
+
 cmd_env() {
   require_profile "${1:-}"
   if [ "$1" = "default" ]; then
@@ -371,6 +601,7 @@ main() {
   case "$cmd" in
     add) cmd_add "$@" ;;
     list|ls) cmd_list ;;
+    usage) cmd_usage "$@" ;;
     run) cmd_run "$@" ;;
     env) cmd_env "$@" ;;
     remove|rm) cmd_remove "$@" ;;
