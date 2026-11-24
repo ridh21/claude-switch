@@ -1,4 +1,6 @@
-# claude-switch
+<h1 align="center">
+  <img src="assets/banner.svg" alt="claude-switch" width="412">
+</h1>
 
 `cswitch` keeps several Claude Code logins on one machine. Each one is a profile that you log in to once, then launch by name.
 
