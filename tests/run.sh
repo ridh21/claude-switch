@@ -73,16 +73,26 @@ check_not() {
   esac
 }
 
-# Run under a pseudo-terminal so cswitch sees an interactive session.
-# The input is typed after a moment, once cswitch is waiting for it.
+# in_tty <answer> <command...>: run under a pseudo-terminal so cswitch sees an
+# interactive session. With an answer, wait for the [Y/n] prompt and type it;
+# waiting on the prompt, not a clock, keeps this from racing.
 in_tty() {
-  local input="$1"
+  local answer="$1"
   shift
-  if [ "$(uname -s)" = "Darwin" ]; then
-    { sleep 1; printf '%s' "$input"; } | script -q /dev/null "$@"
-  else
-    { sleep 1; printf '%s' "$input"; } | script -qec "$(printf '%q ' "$@")" /dev/null
-  fi
+  cat > "$T/tty.exp" <<'EXP'
+log_user 1
+set timeout 30
+spawn -noecho {*}$argv
+if {$env(TTY_ANSWER) ne ""} {
+  expect {
+    -exact {[Y/n]} { send -- "$env(TTY_ANSWER)\r"; exp_continue }
+    eof
+  }
+} else {
+  expect eof
+}
+EXP
+  TTY_ANSWER="$answer" expect -f "$T/tty.exp" -- "$@"
 }
 
 test_usage_picks_most_room() {
@@ -157,8 +167,7 @@ test_handoff_continues_on_login_with_room() {
   setup
   account default t-default 10 10
   account work t-work 100 50
-  in_tty "y
-" "$CSWITCH" work >/dev/null 2>&1
+  in_tty "y" "$CSWITCH" work >/dev/null 2>&1
   local log
   log="$(cat "$FAKE/claude.log")"
   check "the first session ran on work" "$log" "$CSWITCH_HOME/work|"
@@ -171,8 +180,7 @@ test_handoff_declined_stays_put() {
   setup
   account default t-default 10 10
   account work t-work 100 50
-  in_tty "n
-" "$CSWITCH" work >/dev/null 2>&1
+  in_tty "n" "$CSWITCH" work >/dev/null 2>&1
   check_not "declining starts nothing else" "$(cat "$FAKE/claude.log")" "--continue"
   teardown
 }
@@ -191,8 +199,7 @@ test_no_handoff_to_isolated_history() {
   account default t-default 100 10
   "$CSWITCH" add solo --isolated >/dev/null 2>&1
   account solo t-solo 5 5
-  in_tty "y
-" "$CSWITCH" default >/dev/null 2>&1
+  in_tty "y" "$CSWITCH" default >/dev/null 2>&1
   check_not "an isolated login cannot continue the conversation" "$(cat "$FAKE/claude.log")" "--continue"
   teardown
 }
@@ -201,8 +208,7 @@ test_print_mode_never_offers_handoff() {
   setup
   account default t-default 10 10
   account work t-work 100 50
-  in_tty "y
-" "$CSWITCH" work -p hi >/dev/null 2>&1
+  in_tty "y" "$CSWITCH" work -p hi >/dev/null 2>&1
   check_not "-p is not interactive, so nothing is handed off" "$(cat "$FAKE/claude.log")" "--continue"
   check "and no limit check was made" "$(curl_calls)" "0"
   teardown
