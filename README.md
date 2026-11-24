@@ -180,6 +180,18 @@ account=$(printf '%s' "$input" | cswitch statusline --account 2>/dev/null)
 
 The status line never uses the network. It reads the limits Claude Code passes to it and saves them, which keeps the menu and the end-of-session check up to date at no cost.
 
+### Updates
+
+Once a day, `cswitch` checks in the background whether a new version is out. If one is, the menu and `cswitch usage` show a line under their output:
+
+```
+  cswitch 0.5.0 is out (you have 0.4.2)  ·  brew upgrade claude-switch
+```
+
+For a Homebrew install, the line suggests `brew upgrade claude-switch`. Otherwise it suggests `cswitch update`, which does the upgrade for you. `cswitch update --check` checks right away without installing anything.
+
+The check never slows anything down. The menu shows what the last check found, and a new check runs in the background with a short timeout. Scripts, pipes, `-p` and the status line never check. `CSWITCH_UPDATE_CHECK=0` turns it off.
+
 ## Commands
 
 | Command | What it does |
@@ -195,6 +207,7 @@ The status line never uses the network. It reads the limits Claude Code passes t
 | `cswitch env <name>` | Print the `export` line that points a shell at a profile |
 | `cswitch init` | Print the shell function that makes `claude` show the menu |
 | `cswitch remove <name> [-y]` | Delete a profile |
+| `cswitch update [--check]` | Upgrade cswitch, or only check for a new version |
 | `cswitch --version`, `--help` | Version and help |
 
 Any arguments after a profile name go to `claude` unchanged, as in `cswitch work --continue`.
@@ -215,6 +228,7 @@ eval "$(cswitch env work)"
 | `CSWITCH_HANDOFF` | `1` | `0` turns off the offer to continue on another login |
 | `CSWITCH_BANNER` | `1` | `0` hides the banner above the menu |
 | `CSWITCH_USAGE_TTL` | `120` | Seconds a saved usage reading counts as fresh |
+| `CSWITCH_UPDATE_CHECK` | `1` | `0` turns off the daily check for a new version |
 | `NO_COLOR` | unset | Set it to any value to turn off colour |
 
 ## How it works
@@ -243,6 +257,7 @@ Usage readings are saved in `~/.claude-profiles/.cache/` for two minutes, so the
 - To check limits, `cswitch` reads each profile's Claude Code login token from the macOS Keychain, or from `.credentials.json` on Linux. It sends the token only to `api.anthropic.com`.
 - The token is never printed or stored, and it's passed to `curl` on stdin, so it never appears in the process list.
 - `cswitch` never refreshes or changes a login. If a token has expired, launch that profile once and Claude Code refreshes it.
+- The daily update check downloads one public file, this repo's Homebrew formula, from `raw.githubusercontent.com`. It sends no account data.
 - The usage service is the one Claude Code itself uses. It isn't a documented public API, so it may change.
 
 ## Troubleshooting
@@ -264,6 +279,14 @@ The tests run against a throwaway home directory, with fake `claude`, `curl` and
 ```bash
 tests/run.sh
 ```
+
+To release a version:
+
+1. Bump `CSWITCH_VERSION` in `bin/cswitch`, commit, and push `main`.
+2. Tag that commit (`git tag v0.5.0 && git push origin v0.5.0`).
+3. Point `Formula/claude-switch.rb` at the new tag's tarball and its `sha256`, then push `main` again.
+
+Step 3 is what users see: the update check reads the version from the formula on `main`.
 
 ## Intended use
 

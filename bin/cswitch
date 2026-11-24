@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-CSWITCH_VERSION="0.4.1"
+CSWITCH_VERSION="0.4.2"
 CSWITCH_HOME="${CSWITCH_HOME:-$HOME/.claude-profiles}"
 # The stock Claude Code config, used as the built-in "default" profile and as
 # the source of shared settings.
@@ -36,6 +36,7 @@ Usage:
   cswitch run <name> [claude args...]  Same as above
   cswitch env <name>                   Print the export line for a profile
   cswitch statusline [--account]       Status line for Claude Code (see README)
+  cswitch update [--check]             Upgrade cswitch, or just check for a new version
   cswitch init                         Print a shell function that makes plain
                                        'claude' ask which profile to use
   cswitch remove <name> [-y]           Delete a profile
@@ -65,7 +66,7 @@ valid_name() {
 
 is_reserved() {
   case "$1" in
-    default|add|list|ls|usage|best|run|env|remove|rm|pick|init|statusline|_claude|help|version) return 0 ;;
+    default|add|list|ls|usage|best|run|env|remove|rm|pick|init|statusline|update|_claude|help|version) return 0 ;;
   esac
   return 1
 }
@@ -316,11 +317,14 @@ U_STATUS=() U_SPCT=() U_SAT=() U_WPCT=() U_WAT=()
 # load_usage <max age> <timeout>: readings for every profile, asked at once.
 load_usage() {
   local tmp i count=${#PROFILE_NAMES[@]} st sp sa wp wa
+  local pids=()
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/cswitch.XXXXXX")"
   for ((i = 0; i < count; i++)); do
     usage_for "${PROFILE_NAMES[$i]}" "$1" "$2" > "$tmp/$i" &
+    pids[$i]=$!
   done
-  wait
+  # Only these jobs: a background version check must not hold up the menu.
+  for ((i = 0; i < count; i++)); do wait "${pids[$i]}" || true; done
   for ((i = 0; i < count; i++)); do
     st="" sp="" sa="" wp="" wa=""
     IFS='|' read -r st sp sa wp wa < "$tmp/$i" || true
@@ -377,7 +381,7 @@ meter() {
 }
 
 cmd_usage() {
-  local json=0 i count name email active last mark width=7
+  local json=0 i count name email active last mark width=7 notice
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -434,6 +438,130 @@ cmd_usage() {
       "$C_BOLD" "${PROFILE_NAMES[$BEST]}" "$C_RESET" "${U_SPCT[$BEST]}" "${U_WPCT[$BEST]:-0}" \
       "${PROFILE_NAMES[$BEST]}"
   fi
+  if [ -t 1 ]; then
+    refresh_latest_soon
+    notice="$(update_notice)"
+    [ -z "$notice" ] || printf '\n  %s\n' "$notice"
+  fi
+}
+
+# ---- new versions ---------------------------------------------------------
+# The latest release is read from the Homebrew formula on main: its tarball
+# URL names the tag that 'brew upgrade' would install. Checked at most once a
+# day, in the background, so nothing ever waits for it.
+
+UPDATE_URL="${CSWITCH_UPDATE_URL:-https://raw.githubusercontent.com/ridh21/claude-switch/main/Formula/claude-switch.rb}"
+INSTALL_URL="https://raw.githubusercontent.com/ridh21/claude-switch/main/install.sh"
+UPDATE_EVERY=86400
+
+update_check_on() {
+  [ "${CSWITCH_UPDATE_CHECK:-1}" != "0" ]
+}
+
+# version_newer <a> <b>: whether release a comes after release b.
+version_newer() {
+  local IFS=. a b i x y
+  a=($1) b=($2)
+  for ((i = 0; i < 3; i++)); do
+    x="${a[$i]:-0}" y="${b[$i]:-0}"
+    case "$x$y" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$x" -gt "$y" ]; then return 0; fi
+    if [ "$x" -lt "$y" ]; then return 1; fi
+  done
+  return 1
+}
+
+# fetch_latest <timeout>: the newest released version, or nothing.
+fetch_latest() {
+  curl -fsS -m "$1" "$UPDATE_URL" 2>/dev/null |
+    sed -n 's|.*refs/tags/v\([0-9][0-9.]*[0-9]\)\.tar\.gz.*|\1|p' | head -n 1 || true
+}
+
+# The newest version seen by the last check, however old.
+latest_known() {
+  local line=""
+  [ -f "$CACHE_DIR/latest-version" ] || return 0
+  IFS= read -r line < "$CACHE_DIR/latest-version" || true
+  printf '%s\n' "${line#*|}"
+}
+
+remember_latest() {
+  local file="$CACHE_DIR/latest-version"
+  mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
+  printf '%s|%s\n' "$(date +%s)" "$1" > "$file.$$" 2>/dev/null && mv -f "$file.$$" "$file" 2>/dev/null || rm -f "$file.$$"
+}
+
+# Start a background check when the last one is a day old. The timestamp is
+# written first, so several shells starting at once make one request.
+refresh_latest_soon() {
+  local line="" at
+  update_check_on || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  [ ! -f "$CACHE_DIR/latest-version" ] || IFS= read -r line < "$CACHE_DIR/latest-version" || true
+  at="${line%%|*}"
+  case "$at" in ''|*[!0-9]*) at=0 ;; esac
+  [ $(($(date +%s) - at)) -ge "$UPDATE_EVERY" ] || return 0
+  remember_latest "${line#*|}"
+  (
+    latest="$(fetch_latest 5)"
+    [ -z "$latest" ] || remember_latest "$latest"
+  ) </dev/null >/dev/null 2>&1 3>&- &
+}
+
+# How this copy was installed decides how to upgrade it.
+installed_by_brew() {
+  local link=""
+  [ ! -L "$0" ] || link="$(readlink "$0" 2>/dev/null || true)"
+  case "$0|$link" in *Cellar/claude-switch/*) return 0 ;; esac
+  return 1
+}
+
+upgrade_hint() {
+  if installed_by_brew; then
+    printf 'brew upgrade claude-switch'
+  else
+    printf 'cswitch update'
+  fi
+}
+
+# One line about a newer version, or nothing.
+update_notice() {
+  local latest
+  update_check_on || return 0
+  latest="$(latest_known)"
+  [ -n "$latest" ] || return 0
+  version_newer "$latest" "$CSWITCH_VERSION" || return 0
+  printf '%scswitch %s is out (you have %s)  %s  %s%s' "$C_YELLOW" "$latest" "$CSWITCH_VERSION" \
+    "$C_DOT" "$(upgrade_hint)" "$C_RESET"
+}
+
+cmd_update() {
+  local check=0 latest dir
+  case "${1:-}" in
+    --check) check=1 ;;
+    "") ;;
+    *) die "usage: cswitch update [--check]" ;;
+  esac
+  command -v curl >/dev/null 2>&1 || die "'curl' is needed to check for updates"
+  latest="$(fetch_latest 15)"
+  [ -n "$latest" ] || die "could not reach GitHub to check for a new version"
+  remember_latest "$latest"
+  if ! version_newer "$latest" "$CSWITCH_VERSION"; then
+    info "cswitch $CSWITCH_VERSION is the latest version."
+    return 0
+  fi
+  info "cswitch $latest is out (you have $CSWITCH_VERSION)."
+  [ "$check" -eq 0 ] || return 0
+  if installed_by_brew; then
+    command -v brew >/dev/null 2>&1 || die "run: brew upgrade claude-switch"
+    exec brew upgrade claude-switch
+  fi
+  # The installer puts cswitch in $PREFIX/bin, so aim it at this copy's folder.
+  dir="$(cd "$(dirname "$0")" && pwd -P)"
+  case "$dir" in
+    */bin) curl -fsSL "$INSTALL_URL" | PREFIX="${dir%/bin}" bash ;;
+    *) die "this copy is not in a bin folder; reinstall with: curl -fsSL $INSTALL_URL | bash" ;;
+  esac
 }
 
 # ---- account menu ---------------------------------------------------------
@@ -542,7 +670,7 @@ limits_brief() {
 
 # Ask on the terminal which profile to use. Sets PICKED; returns 1 if cancelled.
 pick_profile() {
-  local count=${#PROFILE_NAMES[@]} sel=0 i width=0 ewidth=0 last name tag num
+  local count=${#PROFILE_NAMES[@]} sel=0 i width=0 ewidth=0 last name tag num notice
   local emails=() briefs=()
 
   exec 3<>/dev/tty || die "no terminal to ask on; use 'cswitch <name>'"
@@ -572,7 +700,10 @@ pick_profile() {
   fi
 
   make_banner "$count"
+  refresh_latest_soon
+  notice="$(update_notice)"
   PICK_HEIGHT=$((count + 5))
+  [ -z "$notice" ] || PICK_HEIGHT=$((PICK_HEIGHT + 1))
   [ ${#BANNER[@]} -eq 0 ] || PICK_HEIGHT=$((PICK_HEIGHT + ${#BANNER[@]} + 1))
   PICK_STTY="$(stty -g <&3)"
   trap 'pick_close; exit 130' INT TERM HUP
@@ -607,6 +738,7 @@ pick_profile() {
       done
       printf '\033[2K\n\033[2K  %s%s move  %s  enter select  %s  1-9 pick  %s  q cancel%s\n' \
         "$C_DIM" "$C_ARROWS" "$C_DOT" "$C_DOT" "$C_DOT" "$C_RESET"
+      [ -z "$notice" ] || printf '\033[2K  %s\n' "$notice"
     } >&3
     PICK_DRAWN=1
 
@@ -909,6 +1041,7 @@ main() {
     remove|rm) cmd_remove "$@" ;;
     pick) cmd_pick "$@" ;;
     statusline) cmd_statusline "$@" ;;
+    update) cmd_update "$@" ;;
     init) cmd_init ;;
     _claude) cmd_claude "$@" ;;
     -v|--version|version) printf 'cswitch %s\n' "$CSWITCH_VERSION" ;;

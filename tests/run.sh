@@ -13,7 +13,7 @@ setup() {
   T="$(mktemp -d "${TMPDIR:-/tmp}/cswitch-test.XXXXXX")"
   export HOME="$T/home" CSWITCH_HOME="$T/home/.claude-profiles" CSWITCH_BASE="$T/home/.claude"
   export FAKE="$T/fake" PATH="$T/bin:/usr/bin:/bin"
-  unset CLAUDE_CONFIG_DIR CSWITCH_PROFILE CSWITCH_USAGE_TTL NO_COLOR
+  unset CLAUDE_CONFIG_DIR CSWITCH_PROFILE CSWITCH_USAGE_TTL NO_COLOR CSWITCH_UPDATE_CHECK
   export TERM=dumb LC_ALL=C
   mkdir -p "$HOME/.claude/projects" "$T/bin" "$FAKE"
 
@@ -25,6 +25,12 @@ EOF
   # curl: answer from $FAKE/usage-<token>, counting each call.
   cat > "$T/bin/curl" <<'EOF'
 #!/bin/bash
+# The update check fetches the formula; answer from $FAKE/formula.rb.
+case "$*" in *claude-switch.rb*)
+  echo formula >> "$FAKE/curl.log"
+  [ -f "$FAKE/formula.rb" ] && cat "$FAKE/formula.rb" || exit 22
+  exit 0 ;;
+esac
 token="$(sed -n 's/.*Bearer \([^"]*\)".*/\1/p')"
 echo "$token" >> "$FAKE/curl.log"
 if [ -f "$FAKE/usage-$token" ]; then cat "$FAKE/usage-$token"; printf '\n200'; else printf '\n401'; fi
@@ -209,6 +215,75 @@ test_remove_forgets_limits() {
   "$CSWITCH" remove work -y >/dev/null 2>&1
   check "remove drops the remembered reading" "$(ls "$CSWITCH_HOME/.cache")" ""
   check_not "and the reading for work is gone" "$(ls "$CSWITCH_HOME/.cache")" "usage-work"
+  teardown
+}
+
+# release <version>: the formula on main points at this tag.
+release() {
+  printf '  url "https://github.com/ridh21/claude-switch/archive/refs/tags/v%s.tar.gz"\n' "$1" > "$FAKE/formula.rb"
+}
+
+# latest_seen <version>: what the last daily check found, as of now.
+latest_seen() {
+  mkdir -p "$CSWITCH_HOME/.cache"
+  printf '%s|%s\n' "$(date +%s)" "$1" > "$CSWITCH_HOME/.cache/latest-version"
+}
+
+current_version() { "$CSWITCH" --version | sed 's/cswitch //'; }
+
+test_update_check_finds_newer_release() {
+  setup
+  release 0.10.0
+  local out
+  out="$("$CSWITCH" update --check 2>&1)"
+  check "0.10.0 is newer than 0.4.x, numerically" "$out" "cswitch 0.10.0 is out (you have $(current_version))"
+  check "the check remembers what it found" "$(cat "$CSWITCH_HOME/.cache/latest-version")" "|0.10.0"
+  teardown
+}
+
+test_update_check_when_current() {
+  setup
+  release "$(current_version)"
+  check "same version is reported as latest" "$("$CSWITCH" update --check 2>&1)" "is the latest version"
+  teardown
+}
+
+test_update_check_offline() {
+  setup
+  local out rc=0
+  out="$("$CSWITCH" update --check 2>&1)" || rc=$?
+  check "an unreachable formula is reported" "$out" "could not reach GitHub"
+  check "and exits non-zero" "$rc" "1"
+  teardown
+}
+
+test_usage_shows_update_notice() {
+  setup
+  account default t-default 10 10
+  latest_seen 9.9.9
+  local out
+  out="$(in_tty "" "$CSWITCH" usage 2>&1)"
+  check "usage mentions the new version" "$out" "cswitch 9.9.9 is out"
+  check "with how to get it" "$out" "cswitch update"
+  check "without asking the network again today" "$(grep -c formula "$FAKE/curl.log" 2>/dev/null || echo 0)" "0"
+  out="$(in_tty "" env CSWITCH_UPDATE_CHECK=0 "$CSWITCH" usage 2>&1)"
+  check_not "CSWITCH_UPDATE_CHECK=0 hides it" "$out" "is out"
+  teardown
+}
+
+test_no_notice_when_up_to_date() {
+  setup
+  account default t-default 10 10
+  latest_seen "$(current_version)"
+  check_not "no notice on the latest version" "$(in_tty "" "$CSWITCH" usage 2>&1)" "is out"
+  teardown
+}
+
+test_usage_for_scripts_has_no_notice() {
+  setup
+  account default t-default 10 10
+  latest_seen 9.9.9
+  check_not "piped usage output stays clean" "$("$CSWITCH" usage)" "is out"
   teardown
 }
 
