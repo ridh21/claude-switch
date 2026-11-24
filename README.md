@@ -34,8 +34,8 @@ Claude Code keeps one login per config directory. If you have a work seat and a 
 
   Which Claude account?
 
-  ❯ 1  default  me@example.com   5h  84%  7d  56%  last used
-    2  work     me@company.com   5h  12%  7d  20%  most room
+  ❯ 1  default  ja***e@g***.com  5h  84%  7d  56%  last used
+    2  work     ja***h@a***.com  5h  12%  7d  20%  most room
     3  client   not logged in    not logged in
 
   ↑/↓ move  ·  enter select  ·  1-9 pick  ·  q cancel
@@ -51,6 +51,7 @@ It's a single bash script. The only dependency is `curl`, used to check usage li
 - **`cswitch best`.** Launches the login with the most room, for interactive sessions or one-off prompts.
 - **Handoff.** When a login runs out mid-conversation, you can carry on with another login.
 - **Status line.** Shows which login you're on and how close it is to its limits, inside Claude Code.
+- **Private by default.** Email addresses are always shown masked, so a shared screen or a screenshot doesn't leak them.
 - **Shared setup.** Settings, skills, plugins and conversation history are shared across profiles, so every login behaves the same.
 
 ## Install
@@ -117,8 +118,8 @@ cswitch usage
 
 ```
   PROFILE  ACCOUNT                SESSION (5h)    resets    WEEKLY (7d)     resets
-* default  me@example.com           84% ████████░░ 1h 02m     56% ██████░░░░ 2d 15h
-  work     me@company.com           12% █░░░░░░░░░ 3h 40m     20% ██░░░░░░░░ 4d 2h
+* default  ja***e@g***.com          84% ████████░░ 1h 02m     56% ██████░░░░ 2d 15h
+  work     ja***h@a***.com          12% █░░░░░░░░░ 3h 40m     20% ██░░░░░░░░ 4d 2h
   client   not logged in: run cswitch client
 
   Most room: work (12% session, 20% weekly)  ->  cswitch work
@@ -229,6 +230,7 @@ eval "$(cswitch env work)"
 | `CSWITCH_BANNER` | `1` | `0` hides the banner above the menu |
 | `CSWITCH_USAGE_TTL` | `120` | Seconds a saved usage reading counts as fresh |
 | `CSWITCH_UPDATE_CHECK` | `1` | `0` turns off the daily check for a new version |
+| `CSWITCH_SHOW_EMAIL` | `0` | `1` shows email addresses in full instead of masked |
 | `NO_COLOR` | unset | Set it to any value to turn off colour |
 
 ## How it works
@@ -254,6 +256,7 @@ Usage readings are saved in `~/.claude-profiles/.cache/` for two minutes, so the
 
 ## Privacy and security
 
+- Email addresses are shown masked everywhere: in the menu, `list`, `usage` and `usage --json`. `jane.doe@gmail.com` appears as `ja***e@g***.com`. Set `CSWITCH_SHOW_EMAIL=1` to see them in full.
 - To check limits, `cswitch` reads each profile's Claude Code login token from the macOS Keychain, or from `.credentials.json` on Linux. It sends the token only to `api.anthropic.com`.
 - The token is never printed or stored, and it's passed to `curl` on stdin, so it never appears in the process list.
 - `cswitch` never refreshes or changes a login. If a token has expired, launch that profile once and Claude Code refreshes it.
@@ -274,7 +277,7 @@ Usage readings are saved in `~/.claude-profiles/.cache/` for two minutes, so the
 
 ## Development
 
-The tests run against a throwaway home directory, with fake `claude`, `curl` and `security` commands, so they never touch a real login or the network:
+The tests run against a throwaway home directory, with fake `claude`, `curl` and `security` commands, so they never touch a real login or the network. They need `expect`, which ships with macOS (`apt install expect` on Debian and Ubuntu):
 
 ```bash
 tests/run.sh

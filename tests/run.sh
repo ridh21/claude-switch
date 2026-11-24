@@ -13,7 +13,7 @@ setup() {
   T="$(mktemp -d "${TMPDIR:-/tmp}/cswitch-test.XXXXXX")"
   export HOME="$T/home" CSWITCH_HOME="$T/home/.claude-profiles" CSWITCH_BASE="$T/home/.claude"
   export FAKE="$T/fake" PATH="$T/bin:/usr/bin:/bin"
-  unset CLAUDE_CONFIG_DIR CSWITCH_PROFILE CSWITCH_USAGE_TTL NO_COLOR CSWITCH_UPDATE_CHECK
+  unset CLAUDE_CONFIG_DIR CSWITCH_PROFILE CSWITCH_USAGE_TTL NO_COLOR CSWITCH_UPDATE_CHECK CSWITCH_SHOW_EMAIL
   export TERM=dumb LC_ALL=C
   mkdir -p "$HOME/.claude/projects" "$T/bin" "$FAKE"
 
@@ -284,6 +284,47 @@ test_usage_for_scripts_has_no_notice() {
   account default t-default 10 10
   latest_seen 9.9.9
   check_not "piped usage output stays clean" "$("$CSWITCH" usage)" "is out"
+  teardown
+}
+
+# email <profile> <address>: who the profile is logged in as.
+email() {
+  local file="$CSWITCH_HOME/$1/.claude.json"
+  [ "$1" != "default" ] || file="$HOME/.claude.json"
+  printf '{"oauthAccount":{"emailAddress":"%s"}}' "$2" > "$file"
+}
+
+test_emails_are_masked_everywhere() {
+  setup
+  account default t-default 10 10
+  account work t-work 20 20
+  email default "ridhampatel2k4@gmail.com"
+  email work "bob@corp.example.io"
+  local out
+  out="$("$CSWITCH" usage)"
+  check "usage masks the address" "$out" "ri***4@g***.com"
+  check "a short name keeps one letter" "$out" "b***@c***.io"
+  check_not "usage never shows the full address" "$out" "ridhampatel2k4"
+  check_not "nor the full domain" "$out" "corp.example"
+  out="$("$CSWITCH" usage --json)"
+  check "json masks too" "$out" '"email":"ri***4@g***.com"'
+  out="$("$CSWITCH" list)"
+  check "list masks too" "$out" "ri***4@g***.com"
+  teardown
+}
+
+test_show_email_reveals_addresses() {
+  setup
+  account default t-default 10 10
+  email default "ridhampatel2k4@gmail.com"
+  check "CSWITCH_SHOW_EMAIL=1 shows the whole address" "$(CSWITCH_SHOW_EMAIL=1 "$CSWITCH" list)" "ridhampatel2k4@gmail.com"
+  teardown
+}
+
+test_odd_addresses_still_mask() {
+  setup
+  email default "x@localhost"
+  check "a domain without a dot" "$("$CSWITCH" list)" "x***@l***"
   teardown
 }
 
