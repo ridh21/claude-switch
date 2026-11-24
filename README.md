@@ -60,6 +60,59 @@ To do this, `cswitch` reads each profile's Claude Code login token (from the mac
 
 The usage endpoint is the one Claude Code itself uses and is not a documented public API, so it may change.
 
+"Most room" is the login furthest from either limit, so one at 0% session but 85% weekly ranks below one at 10% and 29%.
+
+To launch that login directly:
+
+```bash
+cswitch best                 # interactive session on the login with the most room
+cswitch best -p "summarize"  # or a one-off prompt
+```
+
+Readings are remembered for two minutes (`CSWITCH_USAGE_TTL`, in seconds) in `~/.claude-profiles/.cache/`, so the menu and `best` rarely wait on the network. `cswitch usage` always asks afresh.
+
+## Carry on when a login runs out
+
+When a session ends and that login has reached its 5-hour or weekly limit, `cswitch` offers to continue the same conversation with the login that has the most room:
+
+```
+  work hit its 5-hour limit (resets in 2h 14m).
+  Continue this conversation on default (12% session, 30% weekly)? [Y/n]
+```
+
+Enter runs `claude --continue` as that login, in the same folder. Only logins that share conversation history are offered, so `--isolated` profiles are skipped. The new session starts with only `--continue`; arguments from the first session are not carried over.
+
+This applies to interactive sessions only. `-p`, `--help`, and subcommands such as `mcp` and `update` run as before. `CSWITCH_HANDOFF=0` turns it off.
+
+It is meant for people who hold more than one account of their own, such as a work seat and a personal plan. See [Intended use](#intended-use).
+
+## Status line
+
+Claude Code can show a line under the prompt from a command you choose. `cswitch statusline` shows which login you are on and how much of its limits is used:
+
+```
+work · 5h 42% 1h 10m · 7d 18%
+```
+
+Close to a limit (80%), it also names the login to switch to: `work · 5h 86% … · next: default 12%`.
+
+Add it to `~/.claude/settings.json`. Profiles share that file, so this covers all of them:
+
+```json
+{
+  "statusLine": { "type": "command", "command": "cswitch statusline" }
+}
+```
+
+If you already have a status line script, `cswitch statusline --account` prints just the login name and the hint, to add to your own line. Pass it the same input Claude Code gave your script:
+
+```bash
+input=$(cat)
+account=$(printf '%s' "$input" | cswitch statusline --account 2>/dev/null)
+```
+
+The status line never uses the network. It reads the limits Claude Code passes to it and remembers them, which keeps the menu and the limit check at the end of a session up to date for free.
+
 ## Pick an account every time
 
 Run `cswitch` with no arguments to choose from a menu:
@@ -67,14 +120,14 @@ Run `cswitch` with no arguments to choose from a menu:
 ```
   Which Claude account?
 
-  ❯ 1  default  me@example.com  last used
-    2  work     me@company.com
-    3  client   not logged in
+  ❯ 1  default  me@example.com  5h  84%  7d  56%  last used
+    2  work     me@company.com  5h  12%  7d  20%  most room
+    3  client   not logged in   not logged in
 
   ↑/↓ move  ·  enter select  ·  1-9 pick  ·  q cancel
 ```
 
-Move with the arrow keys or `j`/`k`, press Enter to launch, or press a number to launch that row directly. The menu starts on the profile you used last, so Enter repeats it. `q`, Esc and Ctrl-C cancel without starting Claude Code.
+Move with the arrow keys or `j`/`k`, press Enter to launch, or press a number to launch that row directly. The menu starts on the profile you used last, so Enter repeats it, unless that login has reached a limit and another has room. Each row shows the login's session and weekly use. `q`, Esc and Ctrl-C cancel without starting Claude Code.
 
 To get the menu whenever you type `claude`, add this to `~/.zshrc` or `~/.bashrc`:
 
