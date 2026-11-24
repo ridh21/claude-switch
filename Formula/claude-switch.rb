@@ -1,8 +1,8 @@
 class ClaudeSwitch < Formula
   desc "Keep several Claude Code logins on one machine and launch any of them"
   homepage "https://github.com/ridh21/claude-switch"
-  url "https://github.com/ridh21/claude-switch/archive/refs/tags/v0.4.2.tar.gz"
-  sha256 "9b04ee085a8400c82d4d71e9d9bbb26ad1f4bba99db92c426ea7dcbfe37df333"
+  url "https://github.com/ridh21/claude-switch/archive/refs/tags/v0.4.3.tar.gz"
+  sha256 "896768f0457a230d459b290395366b33bd625dc93672e8c1db5b1f2897984e4f"
   license "MIT"
   head "https://github.com/ridh21/claude-switch.git", branch: "main"
 
