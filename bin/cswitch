@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-CSWITCH_VERSION="0.4.0"
+CSWITCH_VERSION="0.4.1"
 CSWITCH_HOME="${CSWITCH_HOME:-$HOME/.claude-profiles}"
 # The stock Claude Code config, used as the built-in "default" profile and as
 # the source of shared settings.
@@ -475,6 +475,49 @@ read_key() {
   esac
 }
 
+# The banner over the menu: the Claude Code pet and the name, in Claude orange.
+# Both are drawn on the same grid of half-height pixels, so they line up.
+BANNER_PET=(
+  " ▐▛███▜▌ "
+  "▝▜█████▛▘"
+  "  ▘▘ ▝▝  "
+)
+BANNER_WORD=(
+  " ▄▀▀▀  ▄▀▀▀▀ █   █ ▀█▀ ▀▀█▀▀ ▄▀▀▀  █   █"
+  " █      ▀▀▀▄ █ █ █  █    █   █     █▀▀▀█"
+  "  ▀▀▀  ▀▀▀▀   ▀ ▀  ▀▀▀   ▀    ▀▀▀  ▀   ▀"
+)
+BANNER=()
+
+# make_banner <menu rows>: fill BANNER with what fits the terminal on fd 3.
+make_banner() {
+  local size rows=0 cols=0 i orange=""
+  BANNER=()
+  [ "${CSWITCH_BANNER:-1}" != "0" ] || return 0
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *UTF-8*|*utf8*|*UTF8*|*utf-8*) ;; *) return 0 ;; esac
+  size="$(stty size <&3 2>/dev/null || true)"
+  rows="${size% *}" cols="${size#* }"
+  case "$rows$cols" in ''|*[!0-9]*) return 0 ;; esac
+  # The menu itself must still fit below it.
+  [ "$rows" -ge $(($1 + 9)) ] || return 0
+  if [ -n "$C_RESET" ]; then
+    case "${COLORTERM:-}" in
+      truecolor|24bit) orange=$'\033[38;2;217;119;87m' ;;
+      *) orange=$'\033[38;5;173m' ;;
+    esac
+  fi
+  for ((i = 0; i < ${#BANNER_PET[@]}; i++)); do
+    if [ "$cols" -ge 56 ]; then
+      BANNER[$i]="$orange${BANNER_PET[$i]} ${BANNER_WORD[$i]}$C_RESET"
+    elif [ "$cols" -ge 14 ]; then
+      BANNER[$i]="$orange${BANNER_PET[$i]}$C_RESET"
+    else
+      BANNER=()
+      return 0
+    fi
+  done
+}
+
 # One line about a login's limits for the menu.
 limits_brief() {
   local i="$1" s w at
@@ -528,7 +571,9 @@ pick_profile() {
     sel=$BEST
   fi
 
+  make_banner "$count"
   PICK_HEIGHT=$((count + 5))
+  [ ${#BANNER[@]} -eq 0 ] || PICK_HEIGHT=$((PICK_HEIGHT + ${#BANNER[@]} + 1))
   PICK_STTY="$(stty -g <&3)"
   trap 'pick_close; exit 130' INT TERM HUP
   stty -icanon -echo min 1 time 0 <&3
@@ -538,7 +583,12 @@ pick_profile() {
   while :; do
     {
       [ "$PICK_DRAWN" -eq 0 ] || printf '\033[%dA' "$PICK_HEIGHT"
-      printf '\r\033[2K\n\033[2K  %sWhich Claude account?%s\n\033[2K\n' "$C_BOLD" "$C_RESET"
+      printf '\r\033[2K\n'
+      if [ ${#BANNER[@]} -gt 0 ]; then
+        for ((i = 0; i < ${#BANNER[@]}; i++)); do printf '\033[2K  %s\n' "${BANNER[$i]}"; done
+        printf '\033[2K\n'
+      fi
+      printf '\033[2K  %sWhich Claude account?%s\n\033[2K\n' "$C_BOLD" "$C_RESET"
       for ((i = 0; i < count; i++)); do
         tag=""
         [ "${PROFILE_NAMES[$i]}" != "$last" ] || tag="  last used"

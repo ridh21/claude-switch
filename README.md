@@ -127,7 +127,7 @@ Run `cswitch` with no arguments to choose from a menu:
   ↑/↓ move  ·  enter select  ·  1-9 pick  ·  q cancel
 ```
 
-Move with the arrow keys or `j`/`k`, press Enter to launch, or press a number to launch that row directly. The menu starts on the profile you used last, so Enter repeats it, unless that login has reached a limit and another has room. Each row shows the login's session and weekly use. `q`, Esc and Ctrl-C cancel without starting Claude Code.
+Move with the arrow keys or `j`/`k`, press Enter to launch, or press a number to launch that row directly. The menu starts on the profile you used last, so Enter repeats it, unless that login has reached a limit and another has room. Each row shows the login's session and weekly use. Above the menu sits a banner with the Claude Code pet in Claude orange; it shrinks to just the pet in narrow windows and is left out in short ones. `CSWITCH_BANNER=0` turns it off. `q`, Esc and Ctrl-C cancel without starting Claude Code.
 
 To get the menu whenever you type `claude`, add this to `~/.zshrc` or `~/.bashrc`:
 
@@ -174,6 +174,8 @@ Removing a profile deletes only its own directory. Shared files stay in `~/.clau
 ## Intended use
 
 This is for people who hold separate accounts for separate purposes, such as a work seat and a personal plan. Check Anthropic's terms before using additional accounts to get past a usage limit.
+
+cswitch is not made by or affiliated with Anthropic. Claude and Claude Code are trademarks of Anthropic.
 
 ## License
 
