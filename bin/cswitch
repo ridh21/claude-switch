@@ -62,7 +62,12 @@ EOF
 
 valid_name() {
   case "$1" in
-    ""|.*|-*|*[!A-Za-z0-9._-]*) return 1 ;;
+    ""|.*|-*|*[!A-Za-z0-9._-]*|*.) return 1 ;;
+  esac
+  # Windows refuses device names as folder names (CON, NUL, COM1...), so a
+  # profile made on any OS has to work when the folder is opened on Windows.
+  case "$(printf '%s' "${1%%.*}" | tr '[:lower:]' '[:upper:]')" in
+    CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]) return 1 ;;
   esac
 }
 
@@ -786,6 +791,26 @@ pick_profile() {
   [ "$sel" -ge 0 ]
 }
 
+# share_item <target> <link>: a real link to target, or an error. Never a copy:
+# Git Bash's ln -s quietly copies unless told otherwise, and a copied
+# settings.json or projects folder drifts apart and breaks the handoff.
+share_item() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if [ -d "$1" ]; then
+        # A directory junction needs neither admin rights nor Developer Mode.
+        MSYS_NO_PATHCONV=1 "$(cygpath -u "${COMSPEC:-C:\Windows\System32\cmd.exe}")" /c mklink /J "$(cygpath -w "$2")" "$(cygpath -w "$1")" >/dev/null 2>&1 && return 0
+        info "cswitch: could not link $2 to $1"
+      else
+        MSYS=winsymlinks:nativestrict ln -s "$1" "$2" 2>/dev/null && return 0
+        info "cswitch: linking $(basename "$2") needs Windows Developer Mode (Settings > System > For developers),"
+        info "  or create the profile from PowerShell, which falls back to hard links: New-ClaudeProfile <name>"
+      fi
+      return 1 ;;
+    *) ln -s "$1" "$2" ;;
+  esac
+}
+
 cmd_add() {
   local name="" isolated=0
   while [ $# -gt 0 ]; do
@@ -796,7 +821,7 @@ cmd_add() {
     esac
   done
   [ -n "$name" ] || die "usage: cswitch add <name> [--isolated]"
-  valid_name "$name" || die "profile names may only use letters, digits, '.', '_' and '-'"
+  valid_name "$name" || die "profile names may only use letters, digits, '.', '_' and '-' (and not Windows device names such as CON or NUL)"
   is_reserved "$name" && die "'$name' is a reserved name"
   local dir="$CSWITCH_HOME/$name"
   [ ! -e "$dir" ] || die "profile '$name' already exists"
@@ -808,10 +833,18 @@ cmd_add() {
     local item
     for item in $SHARED_ITEMS; do
       if [ -e "$CSWITCH_BASE/$item" ]; then
-        ln -s "$CSWITCH_BASE/$item" "$dir/$item"
+        if ! share_item "$CSWITCH_BASE/$item" "$dir/$item"; then
+          # Undo the half-made profile, dropping links first so nothing shared is followed.
+          find "$dir" -maxdepth 1 -type l -exec rm -f {} +
+          rm -rf "$dir"
+          exit 1
+        fi
         info "  shared $item"
       fi
     done
+  else
+    # Tells 'cswitch doctor' (PowerShell) that sharing nothing is intended.
+    : > "$dir/.cswitch-isolated"
   fi
 
   info "Created profile '$name'."

@@ -8,7 +8,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-D97757" alt="MIT license">
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-D97757" alt="macOS and Linux">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-D97757" alt="macOS, Linux and Windows">
   <img src="https://img.shields.io/badge/bash-3.2%2B-D97757" alt="bash 3.2 or later">
 </p>
 
@@ -43,6 +43,8 @@ Claude Code keeps one login per config directory. If you have a work seat and a 
 
 It's a single bash script. The only dependency is `curl`, used to check usage limits. It runs on the bash 3.2 that ships with macOS, and on Linux. Your existing `~/.claude` setup is never modified.
 
+On Windows, a native PowerShell module does the same, for Windows PowerShell 5.1 and PowerShell 7, with no dependencies. It adds a few things only PowerShell can: usage as objects, Tab completion, Windows Terminal tabs, and VS Code integration. See [Windows: PowerShell and VS Code](#windows-powershell-and-vs-code).
+
 ## Features
 
 - **One profile per login.** Log in once per account, then launch any of them by name.
@@ -55,6 +57,16 @@ It's a single bash script. The only dependency is `curl`, used to check usage li
 - **Shared setup.** Settings, skills, plugins and conversation history are shared across profiles, so every login behaves the same.
 
 ## Install
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/ridh21/claude-switch/main/install.ps1 | iex
+Import-Module ClaudeSwitch
+cswitch setup --vscode --terminal
+```
+
+This installs for both Windows PowerShell 5.1 and PowerShell 7, for your user only, with no admin rights needed. `cswitch setup` makes plain `claude` show the menu in every new PowerShell window. `--vscode` and `--terminal` also add one VS Code terminal profile and one Windows Terminal tab per login. `cswitch setup --undo` takes all of it back out.
 
 **Homebrew**
 
@@ -89,6 +101,43 @@ eval "$(cswitch init)"
 ```
 
 `default` is your existing `~/.claude` login, so it works from the start.
+
+## Windows: PowerShell and VS Code
+
+Every command above works the same in PowerShell: `cswitch add work`, `cswitch work --continue`, `cswitch usage`, `cswitch best`, and the handoff when a login runs out. Profiles live in the same `~\.claude-profiles` folder as the bash version uses, so a profile made in Git Bash or WSL shows up in PowerShell too ([docs/CONTRACT.md](docs/CONTRACT.md)).
+
+**Usage as objects.** `Get-ClaudeUsage` returns one object per login, with whole-number percentages and real reset times:
+
+```powershell
+Get-ClaudeUsage                                   # a table, with the login that has the most room marked
+Get-ClaudeUsage | Where-Object WeeklyPct -lt 50 | Select-Object Profile, SessionResetsAt
+Get-ClaudeUsage -Json                              # the same JSON as cswitch usage --json
+```
+
+The other cmdlets are `Get-ClaudeProfile`, `New-ClaudeProfile`, `Remove-ClaudeProfile`, `Invoke-ClaudeProfile` and `Select-ClaudeProfile` (the menu, returning the name you pick). Profile names Tab-complete after `cswitch`.
+
+**Pin a login to a VS Code workspace.** In the project folder:
+
+```powershell
+cswitch pin work      # or: Set-ClaudeWorkspace -Profile work -Path C:\code\api
+```
+
+This adds `CSWITCH_PROFILE` to the integrated terminal's environment in that folder's `.vscode/settings.json`. Every new terminal there then starts `claude` as `work`, without the menu. The pin covers Windows, macOS and Linux, so it works for teammates who use the bash version too. Your comments and other settings in the file are kept. `cswitch unpin` removes it.
+
+**The Claude Code extension.** `cswitch vscode work` points the extension's chat panel at a login, through its `claudeCode.environmentVariables` setting. VS Code reads that setting only from user settings, so this choice applies to every window, not one workspace. Run *Developer: Reload Window* afterwards. `cswitch vscode default` goes back to your `~\.claude` login.
+
+**Terminal profiles.** `cswitch setup --vscode` adds a "Claude (work)" profile per login to the **+** menu of VS Code's terminal panel. `cswitch setup --terminal` does the same in Windows Terminal's new-tab menu, through a [fragment](https://learn.microsoft.com/windows/terminal/json-fragment-extensions), so your Terminal settings stay untouched. Both lists update when you add or remove a profile.
+
+**`cswitch doctor`.** Checks Claude Code, every profile's shared links and logins. `cswitch doctor --fix` repairs them:
+
+```
+  ok    claude             C:\Users\you\.local\bin\claude.exe
+  ok    file links         symbolic links (Developer Mode is on)
+  ok    work: login        logged in as ja***e@a***.co
+  fail  work: links        settings.json is a copy, not a link. Run: cswitch doctor --fix
+```
+
+**How sharing works on Windows.** Folders such as `projects` and `skills` are shared through directory junctions, which need no admin rights. Files such as `settings.json` use symbolic links when Developer Mode is on, and hard links otherwise. If an editor saves over a link, the next launch puts the link back and keeps the newer contents. Nothing is ever copied.
 
 ## Features in detail
 
@@ -282,6 +331,14 @@ The tests run against a throwaway home directory, with fake `claude`, `curl` and
 ```bash
 tests/run.sh
 ```
+
+The PowerShell module has its own tests, with a fake `claude.cmd` and a local stand-in for the usage service. They need Pester 5 or later (`Install-Module Pester -Scope CurrentUser -SkipPublisherCheck`):
+
+```powershell
+powershell -NoProfile -File powershell\tests\run.ps1
+```
+
+CI runs both suites on Linux, macOS and Windows (Git Bash, Windows PowerShell 5.1 and PowerShell 7).
 
 To release a version:
 
