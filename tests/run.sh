@@ -47,10 +47,22 @@ EOF
 teardown() { rm -rf "$T"; }
 
 # account <name> <token> <session%> <weekly%>
+# The login goes where cswitch looks on each OS: the (fake) macOS Keychain and,
+# for Linux and Windows, <config dir>/.credentials.json.
+sha256_8() {
+  if command -v shasum >/dev/null 2>&1; then printf '%s' "$1" | shasum -a 256 | cut -c1-8
+  else printf '%s' "$1" | sha256sum | cut -c1-8; fi
+}
 account() {
-  local svc="Claude Code-credentials"
-  [ "$1" = "default" ] || { "$CSWITCH" add "$1" >/dev/null 2>&1; svc="$svc-$(printf '%s' "$CSWITCH_HOME/$1" | shasum -a 256 | cut -c1-8)"; }
-  printf '{"claudeAiOauth":{"accessToken":"%s","refreshToken":"r","expiresAt":9999999999999}}' "$2" > "$FAKE/cred-$svc"
+  local svc="Claude Code-credentials" dir="$HOME/.claude" creds
+  if [ "$1" != "default" ]; then
+    "$CSWITCH" add "$1" >/dev/null 2>&1
+    svc="$svc-$(sha256_8 "$CSWITCH_HOME/$1")"
+    dir="$CSWITCH_HOME/$1"
+  fi
+  creds="$(printf '{"claudeAiOauth":{"accessToken":"%s","refreshToken":"r","expiresAt":9999999999999}}' "$2")"
+  printf '%s' "$creds" > "$FAKE/cred-$svc"
+  [ "$(uname -s)" = "Darwin" ] || printf '%s' "$creds" > "$dir/.credentials.json"
   printf '{"five_hour":{"utilization":%s,"resets_at":"2099-01-01T00:00:00Z"},"seven_day":{"utilization":%s,"resets_at":"2099-01-05T00:00:00Z"}}' \
     "$3" "$4" > "$FAKE/usage-$2"
 }
@@ -334,6 +346,63 @@ test_odd_addresses_still_mask() {
   teardown
 }
 
-for t in $(declare -F | awk '{print $3}' | grep '^test_'); do "$t"; done
+test_add_shares_by_link_not_copy() {
+  setup
+  printf '{"theme":"dark"}\n' > "$HOME/.claude/settings.json"
+  "$CSWITCH" add work >/dev/null 2>&1
+  printf '{"theme":"light"}\n' > "$HOME/.claude/settings.json"
+  check "a change in ~/.claude shows up in the profile" "$(cat "$CSWITCH_HOME/work/settings.json")" '"light"'
+  printf 'x\n' > "$CSWITCH_HOME/work/projects/new.txt"
+  check "history written in the profile lands in ~/.claude" "$(ls "$HOME/.claude/projects")" "new.txt"
+  teardown
+}
+
+test_add_failure_keeps_shared_data() {
+  setup
+  mkdir -p "$HOME/.claude/skills" "$HOME/.claude/commands"
+  printf 'keep\n' > "$HOME/.claude/skills/mine.md"
+  printf 'keep\n' > "$HOME/.claude/commands/mine.md"
+  # Linking 'commands' fails after 'skills' was linked: ln on macOS and
+  # Linux, cmd's mklink /J (a junction) in Git Bash.
+  cat > "$T/bin/ln" <<'EOF'
+#!/bin/bash
+case "${!#}" in */commands) exit 1 ;; esac
+exec /bin/ln "$@"
+EOF
+  cat > "$T/bin/fakecmd" <<'EOF'
+#!/bin/bash
+case "$*" in *commands*) exit 1 ;; esac
+exec "$(cygpath -u 'C:\Windows\System32\cmd.exe')" "$@"
+EOF
+  chmod +x "$T/bin/ln" "$T/bin/fakecmd"
+  local comspec="${COMSPEC:-}"
+  command -v cygpath >/dev/null 2>&1 && comspec="$(cygpath -w "$T/bin/fakecmd")"
+  COMSPEC="$comspec" "$CSWITCH" add work >/dev/null 2>&1 || true
+  check "the half-made profile is removed" "$(ls -A "$CSWITCH_HOME" 2>/dev/null)" ""
+  check "an already-linked folder's contents survive the cleanup" "$(ls "$HOME/.claude/skills")" "mine.md"
+  check "the folder that failed to link is untouched" "$(ls "$HOME/.claude/commands")" "mine.md"
+  teardown
+}
+
+test_add_refuses_windows_device_names() {
+  setup
+  local n out
+  for n in CON nul com1 lpt9 work.; do
+    out="$("$CSWITCH" add "$n" 2>&1 || true)"
+    check "add refuses $n" "$out" "profile names may only use"
+  done
+  check "nothing was created" "$(ls -A "$CSWITCH_HOME" 2>/dev/null)" ""
+  teardown
+}
+
+test_isolated_profile_is_marked() {
+  setup
+  "$CSWITCH" add solo --isolated >/dev/null 2>&1
+  check "an isolated profile says so for cswitch doctor" "$(ls -A "$CSWITCH_HOME/solo")" ".cswitch-isolated"
+  teardown
+}
+
+# TEST_FILTER=add_ tests/run.sh runs only the tests whose names start with test_add_.
+for t in $(declare -F | awk '{print $3}' | grep "^test_${TEST_FILTER:-}"); do "$t"; done
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

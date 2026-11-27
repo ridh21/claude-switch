@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration>
+  <ViewDefinitions>
+    <View>
+      <Name>ClaudeSwitch.Usage</Name>
+      <ViewSelectedBy><TypeName>ClaudeSwitch.Usage</TypeName></ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Profile</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Account</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Session</Label><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Resets</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Weekly</Label><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Resets</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Room</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><ScriptBlock>$(if ($_.Active) { '* ' } else { '  ' }) + $_.Profile</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.Status -eq 'ok' -or $_.Account) { $_.Account } else { $_.Status }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($null -ne $_.SessionPct) { "$($_.SessionPct)%" } elseif ($_.Status -ne 'ok' -and $_.Account) { $_.Status }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><PropertyName>SessionResetsIn</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($null -ne $_.WeeklyPct) { "$($_.WeeklyPct)%" }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><PropertyName>WeeklyResetsIn</PropertyName></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.MostRoom) { 'most' } elseif ($_.Status -eq 'ok' -and (($_.SessionPct -ge 100) -or ($_.WeeklyPct -ge 100))) { 'none' }</ScriptBlock></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>ClaudeSwitch.Profile</Name>
+      <ViewSelectedBy><TypeName>ClaudeSwitch.Profile</TypeName></ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Profile</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Account</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Shares</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Path</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><ScriptBlock>$(if ($_.Active) { '* ' } else { '  ' }) + $_.Name</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.Account) { $_.Account } else { '(not logged in)' }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><ScriptBlock>if ($_.Name -eq 'default') { '' } elseif ($_.Isolated) { 'nothing' } else { 'settings, history' }</ScriptBlock></TableColumnItem>
+              <TableColumnItem><PropertyName>Path</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>ClaudeSwitch.Check</Name>
+      <ViewSelectedBy><TypeName>ClaudeSwitch.Check</TypeName></ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Status</Label><Width>6</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Check</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Detail</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <Wrap />
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Status</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Check</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Detail</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+  </ViewDefinitions>
+</Configuration>

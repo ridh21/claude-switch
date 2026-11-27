@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bash:
+    name: bash (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install expect
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y expect
+      - run: tests/run.sh
+
+  git-bash:
+    # bin/cswitch under Git Bash on Windows: profiles must share by link, never by copy.
+    name: bash (windows, Git Bash)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: TEST_FILTER=add_ tests/run.sh
+      - run: TEST_FILTER=isolated_ tests/run.sh
+
+  powershell:
+    name: PowerShell ${{ matrix.shell == 'pwsh' && '7' || '5.1' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Pester
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+          Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+      - name: Test
+        run: ./powershell/tests/run.ps1 -Output Detailed

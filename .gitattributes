@@ -1,0 +1,4 @@
+# Scripts run by bash must keep LF endings, even in a Windows checkout.
+bin/cswitch text eol=lf
+*.sh text eol=lf
+Formula/*.rb text eol=lf
