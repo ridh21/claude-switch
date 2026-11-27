@@ -113,3 +113,12 @@ function Remove-SharedLink([string]$Path) {
   if ($item.PSIsContainer) { [IO.Directory]::Delete($item.FullName, $false) }
   else { [IO.File]::Delete($item.FullName) }
 }
+
+# Delete a profile folder, unlinking its shared items first so the recursive
+# delete can never follow a junction or symlink into ~\.claude.
+function Remove-ProfileDir([string]$Dir) {
+  if (-not (Test-Path -LiteralPath $Dir)) { return }
+  Get-ChildItem -LiteralPath $Dir -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint -or $_.LinkType } |
+    ForEach-Object { Remove-SharedLink $_.FullName }
+  Remove-Item -LiteralPath $Dir -Recurse -Force
+}

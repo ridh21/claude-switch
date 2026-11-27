@@ -357,6 +357,33 @@ test_add_shares_by_link_not_copy() {
   teardown
 }
 
+test_add_failure_keeps_shared_data() {
+  setup
+  mkdir -p "$HOME/.claude/skills" "$HOME/.claude/commands"
+  printf 'keep\n' > "$HOME/.claude/skills/mine.md"
+  printf 'keep\n' > "$HOME/.claude/commands/mine.md"
+  # Linking 'commands' fails after 'skills' was linked: ln on macOS and
+  # Linux, cmd's mklink /J (a junction) in Git Bash.
+  cat > "$T/bin/ln" <<'EOF'
+#!/bin/bash
+case "${!#}" in */commands) exit 1 ;; esac
+exec /bin/ln "$@"
+EOF
+  cat > "$T/bin/fakecmd" <<'EOF'
+#!/bin/bash
+case "$*" in *commands*) exit 1 ;; esac
+exec "$(cygpath -u 'C:\Windows\System32\cmd.exe')" "$@"
+EOF
+  chmod +x "$T/bin/ln" "$T/bin/fakecmd"
+  local comspec="${COMSPEC:-}"
+  command -v cygpath >/dev/null 2>&1 && comspec="$(cygpath -w "$T/bin/fakecmd")"
+  COMSPEC="$comspec" "$CSWITCH" add work >/dev/null 2>&1 || true
+  check "the half-made profile is removed" "$(ls -A "$CSWITCH_HOME" 2>/dev/null)" ""
+  check "an already-linked folder's contents survive the cleanup" "$(ls "$HOME/.claude/skills")" "mine.md"
+  check "the folder that failed to link is untouched" "$(ls "$HOME/.claude/commands")" "mine.md"
+  teardown
+}
+
 test_add_refuses_windows_device_names() {
   setup
   local n out

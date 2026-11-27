@@ -4,6 +4,18 @@ BeforeAll {
 }
 
 Describe 'New-ClaudeProfile' {
+  BeforeAll {
+    # New-SharedLink, real except that linking <Item> fails the way it does
+    # when Windows refuses a link. Pester 6 mocks need a catch-all for this.
+    $realLink = InModuleScope ClaudeSwitch { (Get-Command New-SharedLink -CommandType Function).ScriptBlock }
+    function Use-FailingLink([string]$Item) {
+      $script:failItem = $Item
+      Mock New-SharedLink -ModuleName ClaudeSwitch { & $realLink $Target $Link }
+      Mock New-SharedLink -ModuleName ClaudeSwitch -ParameterFilter { (Split-Path $Link -Leaf) -eq $script:failItem } {
+        throw "cswitch: could not link $script:failItem"
+      }
+    }
+  }
   BeforeEach { $t = New-TestEnvironment }
   AfterEach { Remove-TestEnvironment $t }
 
@@ -35,6 +47,31 @@ Describe 'New-ClaudeProfile' {
     param($Name)
     { New-ClaudeProfile $Name } | Should -Throw
     Join-Path $t.Profiles $Name | Should -Not -Exist
+  }
+
+  It 'removes the half-made profile when a later item cannot be linked, keeping ~/.claude intact' {
+    Set-Content (Join-Path $t.Base 'settings.json') '{}'
+    New-Item -ItemType Directory (Join-Path $t.Base 'skills'), (Join-Path $t.Base 'commands') | Out-Null
+    Set-Content (Join-Path $t.Base 'skills\mine.md') 'keep'
+    Set-Content (Join-Path $t.Base 'commands\mine.md') 'keep'
+    # settings.json and skills link for real; commands fails as New-SharedLink does.
+    Use-FailingLink 'commands'
+
+    { New-ClaudeProfile work } | Should -Throw '*could not link commands*'
+
+    Join-Path $t.Profiles 'work' | Should -Not -Exist
+    Get-Content (Join-Path $t.Base 'settings.json') | Should -Be '{}'
+    Join-Path $t.Base 'skills\mine.md' | Should -Exist
+    Join-Path $t.Base 'commands\mine.md' | Should -Exist
+  }
+
+  It 'can create the profile again after a failed attempt' {
+    New-Item -ItemType Directory (Join-Path $t.Base 'commands') | Out-Null
+    Use-FailingLink 'commands'
+    { New-ClaudeProfile work } | Should -Throw
+    Use-FailingLink 'none'
+
+    { New-ClaudeProfile work } | Should -Not -Throw
   }
 
   It 'refuses to create a profile that already exists' {

@@ -25,12 +25,18 @@ function New-ClaudeProfile {
     # Tells cswitch doctor and bin/cswitch that sharing nothing is intended.
     Write-CsFile (Join-Path $dir '.cswitch-isolated') ''
   } else {
-    foreach ($item in $script:SharedItems) {
-      $target = Join-Path (Get-CsBase) $item
-      if (Test-Path -LiteralPath $target) {
-        $kind = New-SharedLink $target (Join-Path $dir $item)
-        Write-Verbose "shared $item ($kind)"
+    try {
+      foreach ($item in $script:SharedItems) {
+        $target = Join-Path (Get-CsBase) $item
+        if (Test-Path -LiteralPath $target) {
+          $kind = New-SharedLink $target (Join-Path $dir $item)
+          Write-Verbose "shared $item ($kind)"
+        }
       }
+    } catch {
+      # Undo the half-made profile so a retry works; ~\.claude is never touched.
+      Remove-ProfileDir $dir
+      throw
     }
   }
   Sync-ShellIntegrations
@@ -76,10 +82,7 @@ function Remove-ClaudeProfile {
   if ($Force) { $ConfirmPreference = 'None' }
   if (-not $PSCmdlet.ShouldProcess($Name, 'Delete profile (shared settings and history are kept)')) { return }
   $dir = Get-ProfileDir $Name
-  # Links first, so nothing shared can be followed and deleted.
-  Get-ChildItem -LiteralPath $dir -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint -or $_.LinkType } |
-    ForEach-Object { Remove-SharedLink $_.FullName }
-  Remove-Item -LiteralPath $dir -Recurse -Force
+  Remove-ProfileDir $dir
   Remove-Item -LiteralPath (Join-Path (Get-CsHome) ".cache\usage-$Name") -ErrorAction Ignore
   Sync-ShellIntegrations
   Write-Host "Removed profile '$Name'."
